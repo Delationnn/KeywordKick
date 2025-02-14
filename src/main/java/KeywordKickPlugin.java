@@ -17,7 +17,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.util.List;
 
-@Plugin(id = "keywordkick", name = "Keyword Kick Plugin", version = "1.0", authors = {"Longwise (because yes, I am very long)})
+@Plugin(id = "keywordkick", name = "Keyword Kick Plugin", version = "1.0", authors = {"Longwise (because yes, I am very long)"})
 public class KeywordKickPlugin {
 
     private final Logger logger;
