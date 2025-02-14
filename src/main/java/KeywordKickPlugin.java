@@ -8,30 +8,27 @@ import com.velocitypowered.api.plugin.Plugin;
 import com.velocitypowered.api.plugin.annotation.DataDirectory;
 import com.velocitypowered.api.proxy.Player;
 import com.velocitypowered.api.proxy.ProxyServer;
-import com.velocitypowered.api.proxy.server.RegisteredServer;
 import net.kyori.adventure.text.Component;
 import org.slf4j.Logger;
 
 import javax.inject.Inject;
-import java.nio.file.Files;
 import java.nio.file.Path;
+import java.io.IOException;
+import java.nio.file.Files;
 import java.util.List;
-import java.util.Optional;
 
-@Plugin(id = "keywordkick", name = "Keyword Kick Plugin", version = "1.1", authors = {"Longwise"})
+@Plugin(id = "keywordkick", name = "Keyword Kick Plugin", version = "1.0", authors = {"Longwise (because yes, I am very long)"})
 public class KeywordKickPlugin {
 
     private final Logger logger;
     private final Path configPath;
-    private final ProxyServer server;
+    private final ProxyServer server; // Store ProxyServer instance
     private List<String> keywords;
-    private String redirectServer;
-    private boolean redirectEnabled;
 
     @Inject
     public KeywordKickPlugin(Logger logger, ProxyServer server, @DataDirectory Path dataDirectory) {
         this.logger = logger;
-        this.server = server;
+        this.server = server; // Assign ProxyServer instance
         this.configPath = dataDirectory.resolve("config.yml");
 
         // Load configuration and register commands
@@ -45,93 +42,58 @@ public class KeywordKickPlugin {
             try {
                 Files.createDirectories(configPath.getParent());
                 Files.write(configPath, List.of(
-                        "# List of keywords that trigger an action",
+                        "# List of keywords that trigger a proxy-wide kick",
                         "keywords:",
                         "  - banned",
                         "  - cheating",
-                        "  - AFK'd",
-                        "",
-                        "# Set whether players should be redirected instead of being kicked",
-                        "redirect-enabled: false",
-                        "# The server to redirect players to when kicked",
-                        "redirect-server: lobby"
+                        "  - AFK'd"
                 ));
                 logger.info("Created default config.yml");
-            } catch (Exception e) {
+            } catch (IOException e) {
                 logger.error("Failed to create default config.yml", e);
                 return;
             }
         }
 
-        // Load the config values
+        // Load the keywords from the config file
         try {
             List<String> lines = Files.readAllLines(configPath);
             keywords = lines.stream()
-                    .filter(line -> line.startsWith("  - "))
+                    .filter(line -> !line.startsWith("#") && line.startsWith("  - "))
                     .map(line -> line.substring(4)) // Remove the leading "  - "
                     .toList();
 
-            redirectEnabled = lines.stream()
-                    .anyMatch(line -> line.startsWith("redirect-enabled:") && line.endsWith("true"));
-
-            redirectServer = lines.stream()
-                    .filter(line -> line.startsWith("redirect-server:"))
-                    .map(line -> line.split(":", 2)[1].trim())
-                    .findFirst()
-                    .orElse("lobby");
-
-            logger.info("Configuration loaded: {} keywords, redirect-enabled={}, redirect-server={}", keywords.size(), redirectEnabled, redirectServer);
-        } catch (Exception e) {
+            logger.info("Loaded {} keywords from config.yml", keywords.size());
+        } catch (IOException e) {
             logger.error("Failed to load config.yml", e);
         }
     }
 
-@Subscribe
-public void onKickedFromServer(KickedFromServerEvent event) {
-    Player player = event.getPlayer();
+    @Subscribe
+    public void onKickedFromServer(KickedFromServerEvent event) {
+        Player player = event.getPlayer();
 
-    // Check if the player has the bypass permission
-    if (player.hasPermission("keywordkick.bypass")) {
-        logger.info("Player {} has bypass permission and will not be redirected or kicked.", player.getUsername());
-        return;
-    }
+        // Check if the player has the bypass permission
+        if (player.hasPermission("keywordkick.bypass")) {
+            logger.info("Player {} has keywordkick.bypass permission and will not be kicked.", player.getUsername());
+            return; // Skip kicking this player
+        }
 
-    event.getServerKickReason().ifPresent(reason -> {
-        String kickMessage = reason.toString();
+        if (event.getServerKickReason().isPresent()) {
+            String kickMessage = event.getServerKickReason().get().toString();
 
-        // Check if the kick message contains any of the configured keywords
-        for (String keyword : keywords) {
-            if (kickMessage.toLowerCase().contains(keyword.toLowerCase())) {
-                if (redirectEnabled) {
-                    // Attempt to redirect the player to the configured server
-                    Optional<RegisteredServer> targetServer = server.getServer(redirectServer);
-                    if (targetServer.isPresent()) {
-                        player.createConnectionRequest(targetServer.get()).connect()
-                                .whenComplete((result, throwable) -> {
-                                    if (throwable != null) {
-                                        // Log error and disconnect player if redirection fails
-                                        logger.error("Failed to redirect player {} to {}: {}", player.getUsername(), redirectServer, throwable.getMessage());
-                                        player.disconnect(Component.text("You have been disconnected."));
-                                    } else {
-                                        logger.info("Player {} was successfully redirected to {} due to keyword match: {}", player.getUsername(), redirectServer, keyword);
-                                    }
-                                });
-                    } else {
-                        // Log and disconnect if the target server does not exist
-                        logger.error("Configured redirect server '{}' not found. Disconnecting player {}.", redirectServer, player.getUsername());
-                        player.disconnect(Component.text("You have been disconnected because the redirect server is unavailable."));
-                    }
-                } else {
-                    // Disconnect the player if redirect is disabled
-                    player.disconnect(reason);
-                    logger.info("Player {} was disconnected due to keyword match: {}", player.getUsername(), keyword);
+            // Check if the kick message contains any of the configured keywords
+            for (String keyword : keywords) {
+                if (kickMessage.toLowerCase().contains(keyword.toLowerCase())) {
+                    // Forward the backend server's kick message to the player
+                    player.disconnect(event.getServerKickReason().get());
+
+                    logger.info("Player {} was kicked from the proxy due to keyword match: {}", player.getUsername(), keyword);
+                    return; // Stop checking further keywords after a match
                 }
-                return; // Exit after handling the first keyword match
             }
         }
-    });
-}
-
+    }
 
     private void registerCommands() {
         server.getCommandManager().register("keywordkick", new ReloadCommand(this));
