@@ -2,6 +2,8 @@ Ever wanted a Velocity plugin where you can kick players if their kick message f
 
 Modrinth: https://modrinth.com/plugin/keyword
 
+Hangar: https://hangar.papermc.io/Longwise/KeywordKicker
+
 Commands:
 /keywordkick - Reloads config.yml
 
