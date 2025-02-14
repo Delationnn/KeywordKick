@@ -8,27 +8,30 @@ import com.velocitypowered.api.plugin.Plugin;
 import com.velocitypowered.api.plugin.annotation.DataDirectory;
 import com.velocitypowered.api.proxy.Player;
 import com.velocitypowered.api.proxy.ProxyServer;
+import com.velocitypowered.api.proxy.server.RegisteredServer;
 import net.kyori.adventure.text.Component;
 import org.slf4j.Logger;
 
 import javax.inject.Inject;
-import java.nio.file.Path;
-import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
+import java.util.Optional;
 
-@Plugin(id = "keywordkick", name = "Keyword Kick Plugin", version = "1.0", authors = {"Longwise (because yes, I am very long)"})
+@Plugin(id = "keywordkick", name = "Keyword Kick Plugin", version = "1.1", authors = {"Longwise"})
 public class KeywordKickPlugin {
 
     private final Logger logger;
     private final Path configPath;
-    private final ProxyServer server; // Store ProxyServer instance
+    private final ProxyServer server;
     private List<String> keywords;
+    private String redirectServer;
+    private boolean redirectEnabled;
 
     @Inject
     public KeywordKickPlugin(Logger logger, ProxyServer server, @DataDirectory Path dataDirectory) {
         this.logger = logger;
-        this.server = server; // Assign ProxyServer instance
+        this.server = server;
         this.configPath = dataDirectory.resolve("config.yml");
 
         // Load configuration and register commands
@@ -42,29 +45,43 @@ public class KeywordKickPlugin {
             try {
                 Files.createDirectories(configPath.getParent());
                 Files.write(configPath, List.of(
-                        "# List of keywords that trigger a proxy-wide kick",
+                        "# List of keywords that trigger an action",
                         "keywords:",
                         "  - banned",
                         "  - cheating",
-                        "  - AFK'd"
+                        "  - AFK'd",
+                        "",
+                        "# Set whether players should be redirected instead of being kicked",
+                        "redirect-enabled: false",
+                        "# The server to redirect players to when kicked",
+                        "redirect-server: lobby"
                 ));
                 logger.info("Created default config.yml");
-            } catch (IOException e) {
+            } catch (Exception e) {
                 logger.error("Failed to create default config.yml", e);
                 return;
             }
         }
 
-        // Load the keywords from the config file
+        // Load the config values
         try {
             List<String> lines = Files.readAllLines(configPath);
             keywords = lines.stream()
-                    .filter(line -> !line.startsWith("#") && line.startsWith("  - "))
+                    .filter(line -> line.startsWith("  - "))
                     .map(line -> line.substring(4)) // Remove the leading "  - "
                     .toList();
 
-            logger.info("Loaded {} keywords from config.yml", keywords.size());
-        } catch (IOException e) {
+            redirectEnabled = lines.stream()
+                    .anyMatch(line -> line.startsWith("redirect-enabled:") && line.endsWith("true"));
+
+            redirectServer = lines.stream()
+                    .filter(line -> line.startsWith("redirect-server:"))
+                    .map(line -> line.split(":", 2)[1].trim())
+                    .findFirst()
+                    .orElse("lobby");
+
+            logger.info("Configuration loaded: {} keywords, redirect-enabled={}, redirect-server={}", keywords.size(), redirectEnabled, redirectServer);
+        } catch (Exception e) {
             logger.error("Failed to load config.yml", e);
         }
     }
@@ -75,8 +92,8 @@ public class KeywordKickPlugin {
 
         // Check if the player has the bypass permission
         if (player.hasPermission("keywordkick.bypass")) {
-            logger.info("Player {} has keywordkick.bypass permission and will not be kicked.", player.getUsername());
-            return; // Skip kicking this player
+            logger.info("Player {} has bypass permission and will not be redirected or kicked.", player.getUsername());
+            return;
         }
 
         if (event.getServerKickReason().isPresent()) {
@@ -85,10 +102,22 @@ public class KeywordKickPlugin {
             // Check if the kick message contains any of the configured keywords
             for (String keyword : keywords) {
                 if (kickMessage.toLowerCase().contains(keyword.toLowerCase())) {
-                    // Forward the backend server's kick message to the player
-                    player.disconnect(event.getServerKickReason().get());
+                    if (redirectEnabled) {
+                        // Attempt to redirect the player to the configured server
+                        Optional<RegisteredServer> targetServer = server.getServer(redirectServer);
+                        if (targetServer.isPresent()) {
+                            player.createConnectionRequest(targetServer.get()).fireAndForget();
+                            logger.info("Player {} was redirected to {} due to keyword match: {}", player.getUsername(), redirectServer, keyword);
+                        } else {
+                            logger.error("Configured redirect server '{}' not found. Disconnecting player {}.", redirectServer, player.getUsername());
+                            player.disconnect(Component.text("You have been disconnected."));
+                        }
+                    } else {
+                        // Disconnect the player if redirect is disabled
+                        player.disconnect(event.getServerKickReason().get());
+                        logger.info("Player {} was disconnected due to keyword match: {}", player.getUsername(), keyword);
+                    }
 
-                    logger.info("Player {} was kicked from the proxy due to keyword match: {}", player.getUsername(), keyword);
                     return; // Stop checking further keywords after a match
                 }
             }
