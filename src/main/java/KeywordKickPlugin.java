@@ -24,7 +24,6 @@ public class KeywordKickPlugin {
     private final Logger logger;
     private final Path configPath;
     private final ProxyServer server;
-
     private List<String> keywords;
     private String redirectServer;
     private boolean redirectEnabled;
@@ -35,13 +34,15 @@ public class KeywordKickPlugin {
         this.server = server;
         this.configPath = dataDirectory.resolve("config.yml");
 
+        // Load configuration and register commands
         loadConfig();
         registerCommands();
     }
 
     private void loadConfig() {
-        try {
-            if (!Files.exists(configPath)) {
+        // Check if the config file exists; if not, create a default one
+        if (!Files.exists(configPath)) {
+            try {
                 Files.createDirectories(configPath.getParent());
                 Files.write(configPath, List.of(
                         "# List of keywords that trigger an action",
@@ -56,12 +57,18 @@ public class KeywordKickPlugin {
                         "redirect-server: lobby"
                 ));
                 logger.info("Created default config.yml");
+            } catch (Exception e) {
+                logger.error("Failed to create default config.yml", e);
+                return;
             }
+        }
 
+        // Load the config values
+        try {
             List<String> lines = Files.readAllLines(configPath);
             keywords = lines.stream()
                     .filter(line -> line.startsWith("  - "))
-                    .map(line -> line.substring(4))
+                    .map(line -> line.substring(4)) // Remove the leading "  - "
                     .toList();
 
             redirectEnabled = lines.stream()
@@ -73,62 +80,71 @@ public class KeywordKickPlugin {
                     .findFirst()
                     .orElse("lobby");
 
-            logger.info("Configuration loaded: {} keywords, redirect-enabled={}, redirect-server={}",
-                    keywords.size(), redirectEnabled, redirectServer);
+            logger.info("Configuration loaded: {} keywords, redirect-enabled={}, redirect-server={}", keywords.size(), redirectEnabled, redirectServer);
         } catch (Exception e) {
-            logger.error("Failed to load configuration from config.yml", e);
+            logger.error("Failed to load config.yml", e);
         }
     }
 
-    @Subscribe
-    public void onKickedFromServer(KickedFromServerEvent event) {
-        Player player = event.getPlayer();
+@Subscribe
+public void onKickedFromServer(KickedFromServerEvent event) {
+    Player player = event.getPlayer();
 
-        if (player.hasPermission("keywordkick.bypass")) {
-            logger.info("Player {} has bypass permission, skipping keyword checks.", player.getUsername());
-            return;
-        }
+    // Check if the player has the bypass permission
+    if (player.hasPermission("keywordkick.bypass")) {
+        logger.info("Player {} has bypass permission and will not be redirected or kicked.", player.getUsername());
+        return;
+    }
 
-        if (event.getServerKickReason().isPresent()) {
-            String kickMessage = event.getServerKickReason().get().toString();
+    event.getServerKickReason().ifPresent(reason -> {
+        String kickMessage = reason.toString();
 
-            for (String keyword : keywords) {
-                if (kickMessage.toLowerCase().contains(keyword.toLowerCase())) {
-                    if (redirectEnabled) {
-                        Optional<RegisteredServer> targetServer = server.getServer(redirectServer);
-                        if (targetServer.isPresent()) {
-                            player.createConnectionRequest(targetServer.get()).fireAndForget();
-                            logger.info("Player {} redirected to {} due to keyword match: {}", player.getUsername(), redirectServer, keyword);
-                        } else {
-                            logger.error("Redirect server '{}' not found. Disconnecting player {}.", redirectServer, player.getUsername());
-                            player.disconnect(Component.text("Server not found. Please contact an administrator."));
-                        }
+        // Check if the kick message contains any of the configured keywords
+        for (String keyword : keywords) {
+            if (kickMessage.toLowerCase().contains(keyword.toLowerCase())) {
+                if (redirectEnabled) {
+                    // Attempt to redirect the player to the configured server
+                    Optional<RegisteredServer> targetServer = server.getServer(redirectServer);
+                    if (targetServer.isPresent()) {
+                        player.createConnectionRequest(targetServer.get()).connect()
+                                .whenComplete((result, throwable) -> {
+                                    if (throwable != null) {
+                                        // Log error and disconnect player if redirection fails
+                                        logger.error("Failed to redirect player {} to {}: {}", player.getUsername(), redirectServer, throwable.getMessage());
+                                        player.disconnect(Component.text("You have been disconnected."));
+                                    } else {
+                                        logger.info("Player {} was successfully redirected to {} due to keyword match: {}", player.getUsername(), redirectServer, keyword);
+                                    }
+                                });
                     } else {
-                        player.disconnect(event.getServerKickReason().get());
-                        logger.info("Player {} disconnected due to keyword match: {}", player.getUsername(), keyword);
+                        // Log and disconnect if the target server does not exist
+                        logger.error("Configured redirect server '{}' not found. Disconnecting player {}.", redirectServer, player.getUsername());
+                        player.disconnect(Component.text("You have been disconnected because the redirect server is unavailable."));
                     }
-                    return;
+                } else {
+                    // Disconnect the player if redirect is disabled
+                    player.disconnect(reason);
+                    logger.info("Player {} was disconnected due to keyword match: {}", player.getUsername(), keyword);
                 }
+                return; // Exit after handling the first keyword match
             }
         }
-    }
+    });
+}
 
-    public void reloadConfig(CommandSource source) {
-        try {
-            loadConfig();
-            source.sendMessage(Component.text("KeywordKick configuration reloaded!"));
-            logger.info("Configuration reloaded successfully.");
-        } catch (Exception e) {
-            logger.error("Error reloading configuration.", e);
-            source.sendMessage(Component.text("Failed to reload configuration. Check the console for details."));
-        }
-    }
 
     private void registerCommands() {
         server.getCommandManager().register("keywordkick", new ReloadCommand(this));
     }
 
+    public void reloadConfig(CommandSource source) {
+        loadConfig();
+        source.sendMessage(Component.text("KeywordKick configuration reloaded!"));
+        logger.info("KeywordKick configuration reloaded!");
+    }
+
     public static class ReloadCommand implements SimpleCommand {
+
         private final KeywordKickPlugin plugin;
 
         public ReloadCommand(KeywordKickPlugin plugin) {
@@ -139,8 +155,7 @@ public class KeywordKickPlugin {
         public void execute(Invocation invocation) {
             CommandSource source = invocation.source();
 
-            plugin.logger.info("Executing /keywordkick reload from {}", source);
-
+            // Check if the sender has permission to reload
             if (!source.hasPermission("keywordkick.reload")) {
                 source.sendMessage(Component.text("You do not have permission to execute this command."));
                 return;
